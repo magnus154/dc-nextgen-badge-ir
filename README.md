@@ -111,6 +111,10 @@ The Flipper's infrared parts are really two separate things:
 
 I also checked whether the Flipper's "Logic Analyzer" mode (a tool for watching raw wires) could work around this. It samples about 100,000 times per second. That sounds like a lot, but to cleanly capture something blinking 30,000–60,000 times per second, you need to sample several times *faster* than the blink — otherwise you get a blurry, misleading picture (this is called *aliasing*, like a spinning wheel looking like it's going backward in a movie because the camera isn't fast enough). So even hacking around the sealed ear, the Flipper's other tools aren't fast enough either.
 
+![Diagram showing a fast-blinking signal sampled fast enough to see it correctly, versus the same signal sampled too slowly and appearing as a completely different, slower fake wave](media/aliasing-explained.png)
+
+Look at the bottom half of that picture: the orange dots are all real measurements of the real (light gray) wave, no lying involved — but because they're too spread out in time, connecting them draws a completely different, much slower red wave that never actually happened. That fake red wave is what "aliasing" means: not missing data, but *confidently wrong* data. This is exactly the trap a too-slow recorder falls into with the badge's signal, and exactly why the new 24-million-samples-per-second recorder matters — the top half of the picture is what "recording fast enough" looks like instead: dense dots that trace the real wave with no fakery.
+
 ## The fix: get the right sensor and the right recorder
 
 **Ordered from Adafruit ($25.70 total):**
