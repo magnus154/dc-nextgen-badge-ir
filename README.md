@@ -1,10 +1,10 @@
-# Cracking the DEF CON Kids Badge IR "Touch" Protocol
+# Cracking the DC NextGen "Tanuki" Badge IR "Touch" Protocol
 
 *Badge #266, 21 pts and counting. Let's find out what's actually flying through the air when two of these things touch.*
 
 ## TL;DR
 
-The r00tz/DEF CON Kids badge does a proximity "touch" with other badges over IR, incrementing an on-screen `pts` counter. I tried to capture and replay that exchange using a Flipper Zero. **The Flipper can't do it** — its onboard IR receiver is a sealed ~38 kHz demodulator, and this badge isn't talking on anything near 38 kHz. Every capture came back as noise, and every blind replay attempt (NEC frames, a 30–56 kHz carrier sweep, multiple encodings) left `pts` sitting at 21. Confirmed the exchange is gated by a physical contact button, which rules out "it's just loose IR presence detection."
+The [DC NextGen](https://dcnextgen.org) "Tanuki" badge does a proximity "touch" with other badges over IR, incrementing an on-screen `pts` counter. I tried to capture and replay that exchange using a Flipper Zero. **The Flipper can't do it** — its onboard IR receiver is a sealed ~38 kHz demodulator, and this badge isn't talking on anything near 38 kHz. Every capture came back as noise, and every blind replay attempt (NEC frames, a 30–56 kHz carrier sweep, multiple encodings) left `pts` sitting at 21. Confirmed the exchange is gated by a physical contact button, which rules out "it's just loose IR presence detection."
 
 Verdict: need real capture hardware. TSMP96000 wideband sensor + a proper logic analyzer are now on order. This repo is the log.
 
@@ -12,9 +12,18 @@ Verdict: need real capture hardware. TSMP96000 wideband sensor + a proper logic 
 
 ## The target
 
-- r00tz Asylum / DEF CON Kids badge, ID `#266`, currently showing `21 pts`.
+**Correction, logged as-it-happened:** this started life in the writeup as a "r00tz/DEF CON Kids badge." Wrong. Photos of the actual hardware settled it — it's a **DC NextGen** badge ([dcnextgen.org](https://dcnextgen.org)), codename **TANUKI**, artwork by Drifter, built by **BradánLane Studio**. DC NextGen is its own youth program, separate from r00tz Asylum, so the earlier r00tz-firmware search was chasing the wrong project. Leaving the wrong turn in the log below since it's an honest part of the process — just don't trust the "r00tz" framing in Attempts 1–3, only the technical findings.
+
+| | |
+|---|---|
+| ![Badge back, PCB visible through the case](media/badge-back-pcb.jpg) | ![Badge front, e-paper-style display showing #266, 21 pts, star row, and a hand-drawn egg icon](media/badge-front-display.jpg) |
+|:--:|:--:|
+| Back — PCB, coin-cell holder, DC NextGen / TANUKI branding | Front — display: `#266`, `21 pts`, star meter, egg doodle |
+
+- Badge ID `#266`, currently showing `21 pts`, a 5-star meter (4 filled + 1 partial), and a hand-drawn egg/blob icon on what looks like a low-power reflective/e-paper-style display.
+- Coin-cell powered (per the back-panel warning label) — worth keeping in mind for the bench rig; this thing isn't going to run forever, and IR TX is one of the hungrier things it can do.
 - Has an IR emitter/receiver used for badge-to-badge "touches" — bump two badges together, a spring-loaded **contact button gets physically depressed**, and (apparently) an IR exchange happens that increments both sides' point counter.
-- No 2024/25 r00tz firmware source turned up in a GitHub search — older badge-year repos exist (`AltaOhms/r00tz_badge_defcon_26`, etc.) but nothing for this hardware revision. Firmware-reading route is parked, not dead — see **Firmware shortcut** below.
+- Firmware source not yet located for this badge (searches so far were aimed at the wrong project — see correction above). Next search pass should target **BradánLane Studio** / **DC NextGen** repos specifically. Firmware-reading route is parked, not dead — see **Firmware shortcut** below.
 
 ## Tools on hand
 
@@ -126,7 +135,20 @@ At 24 MHz sampling against a ≤60 kHz carrier, that's 400–800x oversampling �
 
 ## Firmware shortcut (parallel path, unblocked by hardware)
 
-No 2024/25 r00tz source found on GitHub. If the board's **MCU markings** can be read off the PCB, identifying the chip could lead to a public datasheet or an existing dump — which would hand over the carrier and packet format directly and skip straight to step 5.
+Haven't yet searched for **BradánLane Studio** / **DC NextGen** firmware repos specifically (earlier searches wrongly targeted r00tz — see correction up top). Worth a pass.
+
+Also popped the case to get a bare-board shot:
+
+![Bare board with display flipped open on flex cable, showing coin cell, ICs, and header](media/badge-board-mcu.jpg)
+
+What's legible:
+- **CR2032** coin cell, socketed, 3V.
+- A large black component silkscreened **`KLJ-1230`** — likely an inductor/coil for a boost or e-paper driver stage. Worth a datasheet search.
+- Two IC packages (one small SOIC, one larger QFP/SSOP) — one of these is almost certainly the MCU, but the part markings are too small/blurry in this shot to transcribe with confidence. **Need a macro shot of each chip** before this is useful for a datasheet search.
+- An unpopulated header silkscreened with letters that read roughly `W R T U V G` — a strong candidate for a debug/programming port. Worth probing with a multimeter (continuity to obvious SWD/JTAG/UART pins on the MCU) once it's identified.
+- The panel on the flex cable has a lot-code sticker (`...2009017-C...V962A...`-style string) consistent with an **e-paper/electrophoretic display**, not a simple LCD — matches the grainy, high-contrast look in the front-panel photo. Relevant for testing: e-paper refreshes are slow (hundreds of ms to seconds) and don't need power to hold an image, so a "did the badge react" check needs to give the display time to redraw before concluding nothing happened.
+
+Next step on this path: closer, well-lit macro photos of both IC packages, then ID the chip and go hunting for a datasheet or existing dump — which would hand over the carrier and packet format directly and skip straight to step 5.
 
 ---
 
@@ -136,4 +158,6 @@ No 2024/25 r00tz source found on GitHub. If the board's **MCU markings** can be 
 |---|---|
 | `Remote.ir`, `Remote2.ir` | Two learned "captures" from the Flipper — confirmed sensor noise, kept as documented negative examples (see Attempt 1). |
 | `flipper-backup-2026-08-08.tar.gz` | Flipper internal storage backup, taken before the 1.4.3 firmware flash. |
+| `media/badge-back-pcb.jpg`, `media/badge-front-display.jpg` | Reference photos of the actual badge — back (PCB/branding) and front (display). |
+| `media/badge-board-mcu.jpg` | Bare board, case popped, display flipped open on its flex cable — coin cell, ICs, header, e-paper panel. |
 | `FlipperHIDecoder/` | Unrelated side-quest — a DEF CON 34 tool for converting ESP-RFID/Proxmark3 HID card dumps to Flipper format. Pulled in during initial exploration of "what's this Flipper thing capable of," kept for reference. |
