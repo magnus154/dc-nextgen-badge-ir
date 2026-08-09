@@ -22,34 +22,7 @@ The badge talks over infrared, the same invisible light a TV remote uses. We exp
 
 The Flipper's IR receiver only listens for one blink speed, built into its hardware. This badge blinks at some other speed. Every recording we made came back as junk. Every guess we sent back got ignored. Points stayed at 21 no matter what.
 
-The fix is better tools: a sensor that can hear any speed, and a recorder fast enough to see it clearly. Both are ordered. This doc is the notebook until they arrive.
-
-## Glossary
-
-Terms that came up along the way, in the order they show up below.
-
-| Term | What it means |
-|---|---|
-| IR (infrared) | Light your eyes can't see, but a sensor can. |
-| Carrier frequency | The speed a signal blinks at, underneath the actual data. Both sides have to agree on this speed to understand each other. |
-| Baseband | No blinking at all, just a plain on/off signal. This is what the badge turned out to use. |
-| Demodulator | A chip built to understand only one blink speed. The wrong speed comes out as garbage. |
-| Mark / space | The "on" and "off" parts of an IR signal. Their lengths usually carry the real data. |
-| Checksum | Extra math added to a message so the receiver can tell if it got scrambled. Like a receipt total that has to match its line items. |
-| Aliasing | What happens when a fast signal is measured too slowly. A fake, slower signal appears that never really happened. |
-| Logic analyzer | A tool that records a wire's on/off state, many times a second. |
-| AC-coupled | A sensor that only reacts to a changing signal, and ignores anything steady. Good for filtering out sunlight and lamps. Bad for reading a plain on/off signal. |
-| MCU (microcontroller) | The chip in charge, running everything. |
-| GPIO | A basic pin on a chip that software can turn on or off, or read. |
-| UART | A simple way for two chips to talk, one wire each direction. |
-| UPDI | A single wire this chip uses to get reprogrammed, or to have its memory read back out. |
-| SerialUPDI | Using a cheap USB adapter, plus one resistor, to do UPDI instead of buying a special programmer. |
-| Fuse bits | Special settings stored on the chip that control low-level hardware behavior, like what a pin's job is. |
-| Lock bit | One specific setting that can block reading the chip's memory. This badge doesn't have it set. |
-| Duty cycle | How much of one on/off cycle is spent "on." 100% duty cycle means always on, no blinking. |
-| Boost converter | A small circuit that turns a lower voltage into a higher one. |
-| E-paper | A screen that only needs power to change what it shows, then holds the image with no power at all. |
-| Flash / SRAM | Flash is a chip's permanent storage. SRAM is its working memory, which clears when the power goes off. |
+Turns out the real fix wasn't a better sensor at all. It was talking to the person who built the badge. More on that below.
 
 ## Tools
 
@@ -97,45 +70,25 @@ So the badge is checking something before it counts a touch. Probably matching a
 
 Separate from the Flipper testing, we noticed something. Touch the same two badges together a second time, and nothing happens. Only the first meeting between two specific badges scores.
 
-That means each badge remembers who it's already touched, probably by ID number, not just how many touches happened. This matters for our plan: once we can replay one captured message perfectly, replaying that exact same message again and again will likely only ever score once. The badge already has that ID marked off. To keep the score climbing, the replayed message probably needs a different sender ID each time.
+That means each badge remembers who it's already touched, probably by ID number, not just how many touches happened. This matters for our plan: once we know the exact message a real touch sends, replaying that exact same message again and again will likely only ever score once. The badge already has that ID marked off. To keep the score climbing, the replayed message probably needs a different sender ID each time.
 
 ## Then we talked to Relic, who built the thing
 
-We met Relic in person, at the DC NextGen party at the Las Vegas Convention Center during DEF CON 34. Relic gave us a few hints that settle some of what was still a guess above:
+We met Relic in person, at the DC NextGen party at the Las Vegas Convention Center during DEF CON 34. Relic gave us a few hints that settle some of what was still a guess above, and pointed us at a much better path than the one we were on.
 
-- **It does not use a carrier.** This confirms what comparing our three noise captures already pointed to: not a carrier that's just far from the Flipper's speed, no carrier at all. The badge just switches its IR light on and off directly. No fast blinking underneath. This is exactly why the Flipper's receiver, and maybe the sensor we ordered too, never stood a chance. Both of them expect a carrier to be there.
+- **It does not use a carrier.** This confirms what comparing our three noise captures already pointed to: not a carrier that's just far from the Flipper's speed, no carrier at all. The badge just switches its IR light on and off directly. No fast blinking underneath. This is exactly why the Flipper's receiver never stood a chance, it expects a carrier to be there.
 - **The firmware is not locked.** This removes the one real risk in reading it out. No chance of hitting a locked chip and having to choose between giving up or erasing it. A read should just work.
 - **We need a USB-to-UART adapter to read the firmware.** This confirms the plan: a cheap USB adapter can act as a programmer, over a header we found on the board (more on that below).
 
-One problem this creates: the sensor we already ordered is built to catch a flickering signal, and ignore a steady one. A signal with no carrier looks steady, not flickering. So that sensor might not see this badge's signal properly. Worth adding a plain IR photodiode too, one with no filtering, wired straight into the logic analyzer, so we can see the raw on/off signal with nothing filtered out.
+That third hint changed everything. Instead of building a whole capture rig to guess at the signal from the outside, we can just read the firmware straight off the chip and see exactly what it does. See "Reading the firmware directly" below.
 
-Replaying a no-carrier signal through the Flipper also needs a different setting than anything we tried in Try 3. All that speed-sweeping assumed a carrier existed. To fake "no carrier," the LED just needs to stay fully on during each "on" period, instead of flickering at any speed. Worth testing once we actually have a real capture.
+Replaying whatever we learn through the Flipper will still need a different setting than anything we tried in Try 3, since there's no carrier to work with. To fake "no carrier," the LED just needs to stay fully on during each "on" period, instead of flickering at any speed. Worth testing once we know the real message.
 
 ## Why the Flipper couldn't do this
 
 The Flipper's IR side is really two separate pieces. Sending is simple, just a plain LED that can be switched at nearly any speed, which is how the speed-sweep in Try 3 worked. Receiving is the hard part: a sealed chip built to only understand one speed, with no way to change it. Turning blinks into data happens inside that chip, before the Flipper's own software even gets involved. Wrong speed in, garbage out.
 
-We also checked the Flipper's separate Logic Analyzer tool, which watches a raw pin directly. It only measures about 100,000 times a second. That sounds like a lot, but to properly catch something blinking 30,000 to 60,000 times a second, you need to measure several times faster than that, or you get a distorted picture instead of a missing one. That's called aliasing. Same reason a spinning wheel can look like it's spinning backward in a video, the camera just isn't fast enough to keep up.
-
-![Diagram of a fast signal sampled fast enough versus sampled too slow, producing a fake slower wave](media/aliasing-explained.png)
-
-Look at the bottom half of that picture. Every orange dot is a real, honest measurement. But they're spaced too far apart, so connecting them draws a slower red wave that never actually happened. That's aliasing: not missing data, confidently wrong data. The top half shows what measuring fast enough looks like instead, dense dots that trace the real thing. That's why we ordered a much faster recorder.
-
-## What's getting wired up
-
-From Adafruit ($25.70 total): a [TSMP96000](https://www.adafruit.com/product/5970), a sensor built to hear a wide range of speeds instead of just one, plus a cable, some jumper wires, and a breadboard.
-
-From Amazon (~$18.50): a USB logic analyzer that measures 24 million times a second, hundreds of times faster than needed.
-
-Still to add: a plain IR photodiode with no filtering, as a backup to the TSMP96000, now that we know the badge uses no carrier at all.
-
-The sensor's job is to turn the invisible light into an electrical signal. The analyzer's job is to record exactly what that signal did, so we can actually look at it.
-
-## Plan once it all shows up
-
-Short version: wire the sensor to the analyzer, confirm the signal shows up cleanly, catch a real touch, figure out what it means, replay it through the Flipper, then automate it. Full steps are further down.
-
-Things that could still go wrong: only having one badge, which makes catching a real two-badge exchange harder. A checksum that changes with every touch, which would mean understanding real math, not just copying one capture. And now that we know there's no carrier, our first sensor might not be the right tool, so a plain photodiode may be needed alongside it.
+That's a hardware limit we can't work around from the outside. It's part of why reading the firmware directly turned out to be the better move.
 
 ## Popped the case open too
 
@@ -153,29 +106,9 @@ The chip: a **Microchip AVR128DA28**. We could read the marking clearly, plus a 
 
 There's also an unused six-pin header on the board, labeled `G, V, U, T, R, W`. That reads as Ground, Power, a programming pin, and two more for basic serial communication. Relic confirmed the firmware isn't locked, so this header is our way in.
 
-## Step by step: wiring up the sensor and analyzer
+## Reading the firmware directly
 
-**1. Power and wire the TSMP96000.** It has three pins: power, ground, and signal, all labeled right on the board. Use those labels instead of guessing by wire color. Power it from a clean source between 3 and 5 volts, the Flipper's own header has a spare power pin and ground pin that work fine for this. Run the sensor's signal wire to the first channel on the logic analyzer. Connect the analyzer's ground to the same ground as everything else.
-
-![Breadboard layout showing the TSMP96000 wired through the breadboard to the Flipper's GPIO header for power and ground, and to the Xicoolee analyzer's CH0 for signal](media/breadboard-layout.png)
-
-Power and ground from the sensor land on the breadboard and jump up to its rails. Those rails feed the Flipper's power and ground pins. The signal wire runs straight across to the analyzer, and the analyzer's own ground ties into the same rail. Three wires in, three wires out, nothing else on the board.
-
-**2. Get the software talking to the analyzer.** Install a free program called PulseView on the laptop, plug the analyzer in, and pick the right driver for it if it doesn't show up automatically.
-
-**3. First capture: see what's actually there.** Turn the first channel on, set the recording speed as high as the software allows, since this only needs a few milliseconds. Start recording, hold the badge's button, hold the badge right against the sensor, wait a second, then stop. Since there's no carrier, this should look like a simple on/off pattern, not a fast flicker. If the sensor shows nothing useful, try the plain photodiode instead.
-
-**4. Capture a real touch.** Once the sensor is working, record a few more touches. If a second badge is around, try to catch two real badges touching each other, that's the real exchange, not just one side talking to nobody. Save each recording as a file in this repo, so the actual data lives here, not just notes about it.
-
-**5. Read out what it means.** Use the software's tools to measure how long each "on" and "off" stretch lasts, either by hand or by exporting the data and writing a small script. Look for a repeating pattern, most remote-style signals use pulse length to mean a 0 or a 1. Once that's worked out, look for the badge's own ID number somewhere in the pattern, and note which part changes between different recordings. That's probably the checksum, or maybe tied to the already-touched memory we found earlier.
-
-**6. Replay it through the Flipper.** Since there's no carrier to worry about, the LED just needs to stay fully on during each "on" period. Send that pattern at the badge with its button held, and watch the score. If it doesn't work the first time, double-check whether anything got flipped or reversed while decoding it.
-
-**7. If it scores, solve the repeat-scoring problem.** Since the badge only counts one score per sender ID, try changing that part of the message before each replay, and see if that's enough to keep the score climbing on its own.
-
-## Dumping the firmware directly
-
-There's a second path that doesn't need any of the hardware above. Since Relic confirmed the firmware isn't locked, and told us we'd need a USB-to-UART adapter, this should be a fairly direct read over the header we found on the board.
+Since Relic confirmed the firmware isn't locked, and told us we'd need a USB-to-UART adapter, this should be a fairly direct read over the header we found on the board.
 
 **What's needed:** a cheap USB-to-UART adapter. Connect its two data wires together through a resistor, and connect that joined point to the badge's `U` pin. Connect the adapter's ground to the badge's `G` pin. This trick is called SerialUPDI. Leave the badge running on its own battery rather than powering it from the adapter, so skip the `V` pin for now.
 
@@ -191,8 +124,36 @@ pymcuprog read -d avr128da28 -t uart -u <serial port> -m flash -o 0x0000 -b <siz
 
 Only read, don't erase or change any low-level settings. That's the one way this could actually go wrong, one specific setting controls whether that pin can even do this at all, and undoing a mistake there needs special recovery equipment.
 
-Worth trying either way. A clean firmware read would hand us the exact signal format directly, and skip most of the steps above.
+A clean firmware read should hand us the exact signal format directly: the timing, the framing, and how the checksum works, without ever needing to guess from the outside.
+
+Once we have that, the plan is: pull out the exact message a real touch sends, figure out the badge's own ID number inside it, and replay it through the Flipper with the contact button held. If that scores, the next problem is the repeat-scoring rule from earlier, since the badge only counts one score per sender ID, we'd need to change that part of the message before each replay to keep the score climbing.
+
+Things that could still complicate this: only having one badge, which makes seeing a real two-badge exchange harder even with the firmware in hand. And a checksum that changes with every touch, using something the firmware alone might not fully explain, like a shared secret or a counter that ticks up outside of what a single read shows.
 
 ## Files in here
 
-`Remote.ir`, `Remote2.ir`, and `Remote3.ir`: the junk recordings from Try 1, kept as proof of what doesn't work. `flipper-backup-2026-08-08.tar.gz`: a backup of the Flipper's settings from before its firmware update. `media/`: badge photos, close-ups, and our two diagrams. `FlipperHIDecoder/`: an unrelated tool we grabbed early on while poking around at what the Flipper can do, not part of this project, kept for reference.
+`Remote.ir`, `Remote2.ir`, and `Remote3.ir`: the junk recordings from Try 1, kept as proof of what doesn't work. `flipper-backup-2026-08-08.tar.gz`: a backup of the Flipper's settings from before its firmware update. `media/`: badge photos and close-ups. `FlipperHIDecoder/`: an unrelated tool we grabbed early on while poking around at what the Flipper can do, not part of this project, kept for reference.
+
+## Appendix: Glossary
+
+Terms that came up along the way, in the order they show up above.
+
+| Term | What it means |
+|---|---|
+| IR (infrared) | Light your eyes can't see, but a sensor can. |
+| Carrier frequency | The speed a signal blinks at, underneath the actual data. Both sides have to agree on this speed to understand each other. |
+| Baseband | No blinking at all, just a plain on/off signal. This is what the badge turned out to use. |
+| Demodulator | A chip built to understand only one blink speed. The wrong speed comes out as garbage. |
+| Mark / space | The "on" and "off" parts of an IR signal. Their lengths usually carry the real data. |
+| Checksum | Extra math added to a message so the receiver can tell if it got scrambled. Like a receipt total that has to match its line items. |
+| MCU (microcontroller) | The chip in charge, running everything. |
+| GPIO | A basic pin on a chip that software can turn on or off, or read. |
+| UART | A simple way for two chips to talk, one wire each direction. |
+| UPDI | A single wire this chip uses to get reprogrammed, or to have its memory read back out. |
+| SerialUPDI | Using a cheap USB adapter, plus one resistor, to do UPDI instead of buying a special programmer. |
+| Fuse bits | Special settings stored on the chip that control low-level hardware behavior, like what a pin's job is. |
+| Lock bit | One specific setting that can block reading the chip's memory. This badge doesn't have it set. |
+| Duty cycle | How much of one on/off cycle is spent "on." 100% duty cycle means always on, no blinking. |
+| Boost converter | A small circuit that turns a lower voltage into a higher one. |
+| E-paper | A screen that only needs power to change what it shows, then holds the image with no power at all. |
+| Flash / SRAM | Flash is a chip's permanent storage. SRAM is its working memory, which clears when the power goes off. |
