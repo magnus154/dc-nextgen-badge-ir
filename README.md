@@ -100,6 +100,12 @@ New question: maybe the badge doesn't check very carefully — maybe *any* infra
 
 **What this means:** the badge is not a pushover. It's checking that an incoming message actually looks right — matches its expected format, probably including a checksum — before it'll count it as a real touch. Good design on their part, annoying for me: I can't brute-force this, I actually have to see a real message first.
 
+## New observation — touching the same badge twice only counts once
+
+Separate from the Flipper testing: we noticed that touching the **same two badges together a second time doesn't add another point**. The counter only goes up the first time two specific badges touch each other — repeat touches between the same pair don't do anything.
+
+**What this means:** each badge is almost certainly remembering *who* it has already touched (by badge ID, like `#266`), not just counting "how many touch events happened." That's an extra wrinkle for the goal of farming points solo: even once we can perfectly replay a captured message, replaying the *exact same* message over and over will probably only earn one point, ever — because as far as the badge's memory is concerned, it already touched that badge ID. To keep the points climbing, the replayed message would likely need to claim a **different** badge ID each time, not just repeat the same recording. Something to watch for once we can actually read the packet's fields.
+
 ---
 
 ## Why the Flipper hit a wall (and what tool actually works)
