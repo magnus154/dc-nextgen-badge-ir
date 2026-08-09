@@ -166,3 +166,7 @@ If I can identify that brain chip from a clearer photo, there's a chance someone
 | `media/badge-back-pcb.jpg`, `media/badge-front-display.jpg` | Photos of the outside of the badge. |
 | `media/badge-board-mcu.jpg` | Photo of the badge with its case popped open. |
 | `FlipperHIDecoder/` | An unrelated tool I grabbed early on while exploring what the Flipper can do — converts ID-card data into a format the Flipper understands. Not part of this badge project, kept for reference. |
+
+---
+
+Done in collaboration with GitHub user [lebowitz](https://github.com/lebowitz).
