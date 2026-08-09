@@ -1,62 +1,36 @@
-# Cracking the DC NextGen "Tanuki" Badge IR "Touch" Protocol
+# Tanuki Badge IR Touch Protocol
 
-*Badge #266, 21 pts and counting. Two of these badges can "touch" and give each other points using invisible light. This is the story of trying to figure out exactly how that trick works — mistakes included, because that's how real hacking actually goes.*
+Badge #266, sitting at 21 pts right now. Two of these DC NextGen badges can bump each other and both get a point over infrared. I want to know exactly what gets sent when that happens, well enough to fake it.
 
-## The badge, up close
+![Badge back, PCB visible through the case](media/badge-back-pcb.jpg)
+![Badge front, display showing #266, 21 pts, star row, and a hand-drawn egg icon](media/badge-front-display.jpg)
+![Bare board with the display flipped open on its ribbon cable](media/badge-board-mcu.jpg)
 
-| | |
-|---|---|
-| ![Badge back, PCB visible through the case](media/badge-back-pcb.jpg) | ![Badge front, e-paper-style display showing #266, 21 pts, star row, and a hand-drawn egg icon](media/badge-front-display.jpg) |
-|:--:|:--:|
-| **Back** — the circuit board, the coin battery, and the badge's name | **Front** — the screen: badge `#266`, `21 pts`, a row of stars, and a little egg drawing |
+Back, front, and the board with the case popped and the screen flipped out on its ribbon cable.
 
-| |
-|:--:|
-| ![Bare board with the display flipped open on its ribbon cable, showing the battery, chips, and a header](media/badge-board-mcu.jpg) |
-| **Inside** — popped the case open. You can see the battery, the little computer chips, and the screen flipped out on its ribbon cable. |
+Disclosure: Claude AI was used heavily throughout this, running the serial scripts, digging up parts, writing most of this doc. It didn't do everything on its own though, we were steering it the whole way.
 
----
+## Why
 
-## The goal
+If I can figure out what a touch actually says over IR, I can have a Flipper Zero say it back. That means racking up points without a room full of other badges to bump into. Getting there isn't just "look at the signal once" though, the fake touch has to actually pass whatever checks the badge does, or it's just noise to it (see below, this took a few tries to even confirm).
 
-The [DC NextGen](https://dcnextgen.org) "Tanuki" badge earns points by "touching" other badges — bump two badges together and both of their `pts` counters go up. **The real goal here is to rack up points without needing a room full of people to bump badges with** — by figuring out exactly what message a "touch" sends over infrared, then having the Flipper Zero send that same message on demand. If it works, one hacker with a Flipper could rack up points as fast as they want, alone.
+## Where things stand
 
-That's a bigger ask than just "peek at the signal" — it means the fake touch has to be good enough to actually fool the badge, not just look close. So this write-up isn't just curiosity, it's building toward: capture a real touch → understand it completely → replay it → watch the points go up without another badge in the room.
+The badge talks over infrared, same kind of invisible light a TV remote uses. I grabbed a Flipper Zero, figuring it'd read the signal no problem. It did not work at all, and the reason why turned out to be the whole story here.
 
-## The short version (read this first)
+Short version: the Flipper's IR receiver only listens for one specific blink speed, about 38,000 blinks a second (38 kHz), baked into the hardware. This badge is blinking at some other speed. So every recording I got back was junk, and every guess I fired at the badge in return got completely ignored, pts sat at 21 no matter what I tried.
 
-The badge sends its "touch" over **infrared light** — the same invisible light your TV remote uses. I wanted to see exactly what that light signal looks like and what it says, so I can copy it.
+Fix is a real wideband sensor plus a fast enough recorder to actually see what's going on. Both are ordered, this doc is the notebook until they land.
 
-I tried to use a **Flipper Zero** (a little hacker gadget that can read and send infrared signals) to catch and copy the badge's signal. **It didn't work** — and figuring out *why* it didn't work turned out to be most of the interesting part. Short answer: the Flipper's infrared "ear" is built to only understand one specific "pitch" of blinking light, and this badge blinks at a different pitch. Every recording came back as garbage, and every guess I fired back at the badge got ignored — the points counter stayed at 21 no matter what.
+A few terms if you're newer to this: IR just means light your eyes can't see but a sensor can. Devices don't send IR as one steady beam, they blink it on and off fast, and both sides have to agree on how fast (that speed is the "carrier frequency", in kHz). A demodulator chip is built to only understand one of those speeds, feed it the wrong one and it just outputs garbage. A checksum is extra math tacked onto a message so the receiver can tell if it got scrambled, kind of like a receipt total needing to match the line items, and it's probably why blasting random signals at the badge did nothing. A logic analyzer is a tool that records a wire's on/off state many times a second, basically a super fast flip-book camera for electricity. MCU just means the little computer chip running the show.
 
-So: I ordered the right tools for the job (a sensor that can hear *any* pitch, plus a proper recorder fast enough to write it all down). This file is the lab notebook — what I tried, why it failed, what I learned anyway, and what's next.
+## Tools
 
----
+Flipper Zero (updated to 1.4.3 partway through this), and a laptop talking to it over USB with small Python scripts so tests didn't require standing right over the thing.
 
-## Quick vocabulary (skip if you already know this stuff)
+## Try 1: just hit Learn, like teaching a universal remote
 
-- **Infrared (IR) light** — light that's invisible to human eyes but small electronic sensors can see it. TV remotes, badge "touches," and old-school data cables all use it.
-- **Carrier frequency** — infrared isn't sent as one steady beam, it's blinked on and off super fast, like Morse code but way faster — thousands of times per second. How fast it blinks is called the *frequency*, measured in kHz (thousands of blinks per second). Two devices only understand each other if they agree on this blink speed.
-- **Demodulator** — a chip that's built to listen for ONE specific blink speed and translate it into 1s and 0s. If you point a different blink speed at it, it doesn't understand — it just spits out garbage.
-- **Packet** — a structured little message, like a text: an intro (so the receiver knows a message is starting), the actual content, and often a "did this arrive correctly?" check at the end.
-- **Checksum** — a bit of built-in math a message carries so the receiver can double check it wasn't scrambled in transit. Kind of like how a receipt total should match up with all the item prices added together — if it doesn't, something's wrong, and you throw the message out. This is probably why just firing random signals at the badge never worked: it checks its math before it believes you.
-- **Logic analyzer** — a tool that watches a wire and writes down, many times per second, whether it's HIGH or LOW (on or off) at that instant. Basically a super-fast flip-book camera for electricity.
-- **MCU (microcontroller)** — the tiny computer chip that's the "brain" of a gadget like this badge.
-
----
-
-## Tools I'm using
-
-- A **Flipper Zero**, updated to the newest firmware (version 1.4.3) partway through this project.
-- A laptop, talking to the Flipper over a USB cable using little Python scripts, so I could run tests even when I wasn't standing right next to it.
-
----
-
-## Attempt 1 — just try "Learn" mode, like teaching a universal remote
-
-Flipper has a "Learn" button for infrared: point it at a remote, press a button on the remote, and Flipper saves whatever it saw. Important catch: **it saves whatever it saw even if that was nonsense** — it doesn't check whether the signal actually made sense.
-
-I aimed the badge at the Flipper, did a "touch," and hit Learn. Twice. Here's exactly what got saved:
+Flipper has a Learn mode for IR, point it at something, press the button, it saves whatever it saw. Doesn't check if what it saw made any sense. Aimed the badge at it, did a touch, hit Learn. Did this twice.
 
 ```
 $ storage read /ext/infrared/Remote.ir
@@ -76,106 +50,71 @@ duty_cycle: 0.330000
 data: 493 3943 187 1925 240 216 125 428 126 227 125
 ```
 
-(Both of these are saved in this repo as `Remote.ir` and `Remote2.ir` — proof, not just my word for it.)
+Both saved in this repo, `Remote.ir` and `Remote2.ir`.
 
-**Why I know this is garbage and not a real signal:** a real infrared message is dozens of blinks packed tightly together, all following one consistent rhythm — like a drum beat. Look at the numbers in `Remote.ir`: there's a **125,186 microsecond** gap (that's over a tenth of a second — enormous compared to everything else, which is a few *hundred* microseconds) sitting between two tiny blips. That's not a rhythm, that's three random noises with silence in between. Same story in `Remote2.ir` — the gaps between blinks jump all over the place with no shared pattern.
+Neither of these is a real signal. A real IR message is dozens of tightly packed blinks with one consistent rhythm to it. Look at `Remote.ir`, there's a 125,186 microsecond gap sitting between two blips that are only a few hundred microseconds long themselves. That's not a rhythm, that's noise with a long silence in the middle. `Remote2.ir` is the same story, the gaps between blinks are all over the place.
 
-One more trap I nearly fell for: both files say `frequency: 38000`. That looks like a measurement, but it's not — **it's just the default number the Flipper writes into every file**, because its receiver chip throws away the actual blink speed before it ever tells the software anything. It physically can't report a number it never learned. Don't trust that field.
+Also, don't trust that `frequency: 38000` line. It looks like a measurement but it's just the default Flipper writes into every raw capture, because the receiver chip throws away the actual blink speed before the software even sees it. It genuinely cannot report a number it never learned.
 
-**What this means:** the Flipper's ear wasn't hearing the badge's real "voice" — it was just twitching randomly because it heard a pitch it doesn't understand. Like trying to tune an old radio to a frequency it doesn't cover: you get static, not a garbled version of the station.
+So the Flipper's ear wasn't hearing the badge's real signal, it was just twitching because something hit it at a pitch it doesn't understand. Same as tuning a radio to a station that doesn't exist, you get static, not a garbled version of a real broadcast.
 
-## Attempt 2 — listen live, for longer, holding the button
+## Try 2: listen longer, hold the button down
 
-Switched to watching the Flipper's raw feed live, for 25-40 second stretches, doing several "touches" in a row — including holding the badge's little contact button down the entire time (in case the badge only "talks" while that button is pressed — turns out, it does).
+Watched the Flipper's live raw feed for 25-40 second stretches, doing repeated touches, including holding the badge's little contact button down the whole time in case transmission only happens while it's pressed (spoiler, it does).
 
-Result: **almost total silence.** One run caught a 3-blip fragment. A whole 25-second window, badge held right up against the Flipper's sensor the entire time, caught **zero** blips at all.
+Mostly caught nothing. One run got a 3-blip fragment. A full 25 second window with the badge held right against the sensor caught zero blips, not one.
 
-**What this means:** this ruled out "I'm just aiming it wrong." If the Flipper's ear could hear this badge at all, holding them together for 25 straight seconds would catch *something* consistent, not silence one time and 3 random blips the next. The receiver just plain can't hear this badge's pitch.
+That kills the "bad aim" theory. If the receiver could hear this badge at all, 25 seconds of point blank contact would get something consistent, not silence once and 3 random blips the next time. It just can't hear this pitch, period.
 
-## Attempt 3 — okay, can I fool it by just yelling random stuff at it?
+## Try 3: what if I just yell random stuff at it
 
-New question: maybe the badge doesn't check very carefully — maybe *any* infrared blast near it bumps the counter. Worth testing before doing anything harder. Fired a bunch of standard remote-control-style signals at the badge's sensor, at several different pitches (30, 33, 36, 38, 40, and 56 kHz), with different patterns, 48 combinations total, badge's button held the whole time.
+Worth checking before doing anything harder, maybe the badge isn't picky and any old IR blast near it bumps the counter. Fired a pile of standard remote-style signals at it, six different pitches (30, 33, 36, 38, 40, 56 kHz), a handful of patterns each, 48 combinations total, button held the whole time.
 
-`pts` stayed at 21. Every single time.
+pts stayed at 21 through every single one.
 
-**What this means:** the badge is not a pushover. It's checking that an incoming message actually looks right — matches its expected format, probably including a checksum — before it'll count it as a real touch. Good design on their part, annoying for me: I can't brute-force this, I actually have to see a real message first.
+So it's checking something before it counts a touch, probably matching a format and a checksum. Can't brute force past that, I actually have to see a real message first.
 
-## New observation — touching the same badge twice only counts once
+## Side note: same badge twice doesn't score twice
 
-Separate from the Flipper testing: we noticed that touching the **same two badges together a second time doesn't add another point**. The counter only goes up the first time two specific badges touch each other — repeat touches between the same pair don't do anything.
+Noticed this outside of the Flipper testing. Touch the same two badges together a second time and nothing happens, the counter only moves the first time those two specific badges meet.
 
-**What this means:** each badge is almost certainly remembering *who* it has already touched (by badge ID, like `#266`), not just counting "how many touch events happened." That's an extra wrinkle for the goal of farming points solo: even once we can perfectly replay a captured message, replaying the *exact same* message over and over will probably only earn one point, ever — because as far as the badge's memory is concerned, it already touched that badge ID. To keep the points climbing, the replayed message would likely need to claim a **different** badge ID each time, not just repeat the same recording. Something to watch for once we can actually read the packet's fields.
+That means each badge is remembering who it's already touched, probably by ID, not just counting touch events in general. Bad news for the "farm points solo" plan in one specific way: once I can replay a captured message perfectly, replaying the exact same one over and over will likely only ever score once, because the target badge already has that ID marked off. Getting the points to keep climbing probably means the replayed message needs to claim a different sender ID each time. Something to figure out once the packet's actual fields are visible.
 
----
+## Why the Flipper couldn't do this
 
-## Why the Flipper hit a wall (and what tool actually works)
+Its IR side is really two separate pieces. Sending is just a plain LED, controllable at more or less any pitch, that part's fine and is how the carrier sweep in try 3 worked. Receiving is a sealed chip hard-wired to one pitch, ~38 kHz, no setting to change it, the "turn blinks into data" step happens inside the chip before the Flipper's software gets any say. Wrong pitch in, garbage out, no amount of aiming or waiting fixes that.
 
-The Flipper's infrared parts are really two separate things:
+I also looked at whether the Flipper's built-in Logic Analyzer mode could work around it by watching the raw pin directly. It samples around 100,000 times a second, which sounds like plenty until you do the math: catching something blinking 30,000-60,000 times a second cleanly needs several times that sampling rate, or you get a distorted picture instead of a missing one. That's called aliasing, same effect as a spinning wheel looking like it's turning backward on camera because the frame rate can't keep up.
 
-- **The mouth (sending)** — a plain infrared LED, controllable at basically any pitch. This part is flexible and worked fine for my tests.
-- **The ear (receiving)** — a sealed chip **hard-wired to only understand one pitch (~38 kHz)**. There's no setting to change this — the "translate blinks into data" part happens inside the chip itself, before the Flipper's software ever gets a say. If the badge blinks at a different speed, the Flipper's ear literally cannot hear it correctly, no matter how I aim it or how long I wait.
+![Diagram of a fast signal sampled fast enough versus sampled too slow, producing a fake slower wave](media/aliasing-explained.png)
 
-I also checked whether the Flipper's "Logic Analyzer" mode (a tool for watching raw wires) could work around this. It samples about 100,000 times per second. That sounds like a lot, but to cleanly capture something blinking 30,000–60,000 times per second, you need to sample several times *faster* than the blink — otherwise you get a blurry, misleading picture (this is called *aliasing*, like a spinning wheel looking like it's going backward in a movie because the camera isn't fast enough). So even hacking around the sealed ear, the Flipper's other tools aren't fast enough either.
+The bottom half of that chart is the trap. Every orange dot is a real, honest measurement of the real gray wave. But because they're spaced too far apart in time, connecting them draws a completely different, much slower red wave that never happened. That's what aliasing actually is, not missing data, confidently wrong data. Top half is what sampling fast enough looks like instead, dense dots tracing the real thing with no fakery, which is the whole reason the new 24 million sample/second analyzer matters here.
 
-![Diagram showing a fast-blinking signal sampled fast enough to see it correctly, versus the same signal sampled too slowly and appearing as a completely different, slower fake wave](media/aliasing-explained.png)
+## What's getting wired up
 
-Look at the bottom half of that picture: the orange dots are all real measurements of the real (light gray) wave, no lying involved — but because they're too spread out in time, connecting them draws a completely different, much slower red wave that never actually happened. That fake red wave is what "aliasing" means: not missing data, but *confidently wrong* data. This is exactly the trap a too-slow recorder falls into with the badge's signal, and exactly why the new 24-million-samples-per-second recorder matters — the top half of the picture is what "recording fast enough" looks like instead: dense dots that trace the real wave with no fakery.
+From Adafruit ($25.70 total): a [TSMP96000](https://www.adafruit.com/product/5970), a sensor built to hear any IR pitch from 20-60 kHz and pass the raw blinking straight through instead of assuming a fixed speed, plus an adapter cable, jumper wires, and a breadboard.
 
-## The fix: get the right sensor and the right recorder
+From Amazon (~$18.50): a USB logic analyzer that samples 24 million times a second, hundreds of times faster than needed, so no more aliasing problem.
 
-**Ordered from Adafruit ($25.70 total):**
-- A [TSMP96000](https://www.adafruit.com/product/5970) — a sensor built specifically to hear *any* infrared pitch from 20-60 kHz and pass along the raw blinking, instead of assuming one fixed speed like the Flipper does.
-- A little adapter cable, jumper wires, and a breadboard, to wire it all together.
+Sensor turns the light into an electrical signal, analyzer writes down exactly what that signal did so it can actually be looked at.
 
-**Ordered from Amazon (~$18.50):**
-- A proper USB logic analyzer that samples 24 million times per second — hundreds of times faster than we need, so no more blurry aliasing problem.
+## Plan once it all shows up
 
-Once both arrive, the sensor's job is to turn the invisible blinking into an electrical signal, and the logic analyzer's job is to write down that signal in perfect detail so I can look at it on my laptop.
+Wire the sensor to the breadboard, breadboard to the analyzer, common ground. Hold the badge's button, aim it at the sensor, and just look at the trace to finally see the real pitch instead of guessing at it. Catch a few touches, and if a second badge turns up, catch an actual two-badge handshake instead of one badge beaconing alone. Work out the rhythm and framing, find the badge's own ID (`#266`) inside the message, find whatever part changes each time. Then have the Flipper replay the decoded message at the right pitch and watch pts finally move. If that works, loop it and see how fast the counter climbs. Write the real findings up properly with actual signal traces instead of guesses.
 
----
+Stuff that could still get in the way: only having one badge, which makes catching a real handshake harder. A checksum that changes based on something per-touch, which would mean actually understanding the math instead of just copying a capture. And the chance there's no carrier at all, some IR systems just flicker on and off with nothing fast underneath, the new sensor would still catch that fine but replaying it through something that assumes a carrier might need a different approach.
 
-## The plan once the parts show up
-
-1. **Wire it up.** Sensor → breadboard → logic analyzer, all sharing a common ground wire.
-2. **Find the real pitch.** Hold the badge's contact button, aim it at the sensor, and just *look* at the recording — finally see the actual blink speed instead of guessing.
-3. **Catch a real message.** Do several touches. If I can borrow a second badge, catch an actual two-badge handshake — that's the real deal, not just one badge talking to itself.
-4. **Decode it.** Figure out the rhythm, find the badge's ID (`#266`) inside the message, and find whatever part changes each time (probably the checksum).
-5. **Prove it by replaying it.** Have the Flipper send the exact decoded message back at the right pitch, and watch `pts` finally move past 21. That's the finish line — one badge, one Flipper, no second person needed.
-6. **If step 5 works, automate it.** Loop the replay and watch the points climb as fast as the badge will accept them.
-7. **Write it all up properly**, with the real signal diagrams.
-
-## Things that could still trip this up
-
-- **Only having one badge** makes it hard to see a real two-way handshake, not just one badge talking to nobody.
-- **The checksum might be tricky** — if it includes something that changes every time (to stop people from just replaying an old recording), just copying a message won't be enough; I'd need to understand the actual math behind it.
-- **It's possible there's no "pitch" at all** — some infrared systems send data as a plain on/off flicker with no fast blinking underneath. The new sensor would still catch it, but replaying it through the Flipper (which assumes a pitch) might need a different trick.
-
-## Bonus path: read the badge's own brain
-
-While digging around, I also popped the case open to look at the actual circuit board:
+## Popped the case open too
 
 ![Bare board with the display flipped open on its ribbon cable](media/badge-board-mcu.jpg)
 
-What I could make out:
-- A **coin battery** (CR2032), the same kind used in some watches.
-- A big black part labeled `KLJ-1230` — probably a coil that helps power the screen. Worth looking up.
-- Two computer chip packages — one of them is almost certainly the badge's "brain" (the MCU), but the writing on them is too small and blurry in this photo to read for sure. **Next time: closer, sharper photos of each chip.**
-- A row of unused connector holes labeled roughly `W R T U V G` — this smells like a hidden **programming port**, the kind engineers use to load new software onto the chip. Worth testing with a multimeter later.
-- The screen is almost certainly **e-paper** (like a Kindle) rather than a normal screen — it only needs power to *change* what it shows, and holds the picture with no power at all otherwise. Good to know, because it also means the screen updates slowly — if I test something and the screen doesn't change right away, that might just be the screen being slow, not proof that nothing happened.
+Coin battery (CR2032), a big black part marked `KLJ-1230` that's probably a coil for the display driver, worth a datasheet search. Two chip packages, one of them's almost certainly the MCU but the markings are too small and blurry in this photo to actually read, need closer sharper shots of both next time. A row of unpopulated holes labeled something like `W R T U V G`, smells like a debug or programming header, worth checking with a multimeter once the chip's identified. The screen itself is almost certainly e-paper, like a Kindle, meaning it only draws power to change what it shows and holds the image with no power otherwise. Worth remembering when testing, if nothing visibly changes right away that might just be a slow screen redraw, not proof nothing happened.
 
-If I can identify that brain chip from a clearer photo, there's a chance someone's already published its manual (a "datasheet") or even dumped its software — which could just hand me the answer instead of me having to reverse-engineer it from scratch.
+If that chip gets identified from a better photo there's a decent chance its datasheet or even a firmware dump already exists somewhere, which would hand over the carrier and packet format directly instead of having to reverse it from scratch.
 
----
+## Files in here
 
-## What's in this folder
-
-| File | What it is |
-|---|---|
-| `Remote.ir`, `Remote2.ir` | The two "recordings" from Attempt 1 — proven garbage, kept as proof of what *doesn't* work. |
-| `flipper-backup-2026-08-08.tar.gz` | A backup of the Flipper's settings, taken before updating its software. |
-| `media/badge-back-pcb.jpg`, `media/badge-front-display.jpg` | Photos of the outside of the badge. |
-| `media/badge-board-mcu.jpg` | Photo of the badge with its case popped open. |
-| `FlipperHIDecoder/` | An unrelated tool I grabbed early on while exploring what the Flipper can do — converts ID-card data into a format the Flipper understands. Not part of this badge project, kept for reference. |
+`Remote.ir` and `Remote2.ir` are the two junk captures from try 1, kept as proof of what doesn't work. `flipper-backup-2026-08-08.tar.gz` is a Flipper settings backup from before the firmware update. The `media/` photos are the badge front, back, and opened case, plus the aliasing diagram. `FlipperHIDecoder/` is unrelated, a tool I grabbed early on poking around at what the Flipper can do, not part of this project but left in for reference.
 
 ---
 
