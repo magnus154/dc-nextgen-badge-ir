@@ -1,45 +1,65 @@
 # Cracking the DC NextGen "Tanuki" Badge IR "Touch" Protocol
 
-*Badge #266, 21 pts and counting. Let's find out what's actually flying through the air when two of these things touch.*
+*Badge #266, 21 pts and counting. Two of these badges can "touch" and give each other points using invisible light. This is the story of trying to figure out exactly how that trick works — mistakes included, because that's how real hacking actually goes.*
 
-## TL;DR
-
-The [DC NextGen](https://dcnextgen.org) "Tanuki" badge does a proximity "touch" with other badges over IR, incrementing an on-screen `pts` counter. I tried to capture and replay that exchange using a Flipper Zero. **The Flipper can't do it** — its onboard IR receiver is a sealed ~38 kHz demodulator, and this badge isn't talking on anything near 38 kHz. Every capture came back as noise, and every blind replay attempt (NEC frames, a 30–56 kHz carrier sweep, multiple encodings) left `pts` sitting at 21. Confirmed the exchange is gated by a physical contact button, which rules out "it's just loose IR presence detection."
-
-Verdict: need real capture hardware. TSMP96000 wideband sensor + a proper logic analyzer are now on order. This repo is the log.
-
----
-
-## The target
-
-**Correction, logged as-it-happened:** this started life in the writeup as a "r00tz/DEF CON Kids badge." Wrong. Photos of the actual hardware settled it — it's a **DC NextGen** badge ([dcnextgen.org](https://dcnextgen.org)), codename **TANUKI**, artwork by Drifter, built by **BradánLane Studio**. DC NextGen is its own youth program, separate from r00tz Asylum, so the earlier r00tz-firmware search was chasing the wrong project. Leaving the wrong turn in the log below since it's an honest part of the process — just don't trust the "r00tz" framing in Attempts 1–3, only the technical findings.
+## The badge, up close
 
 | | |
 |---|---|
 | ![Badge back, PCB visible through the case](media/badge-back-pcb.jpg) | ![Badge front, e-paper-style display showing #266, 21 pts, star row, and a hand-drawn egg icon](media/badge-front-display.jpg) |
 |:--:|:--:|
-| Back — PCB, coin-cell holder, DC NextGen / TANUKI branding | Front — display: `#266`, `21 pts`, star meter, egg doodle |
+| **Back** — the circuit board, the coin battery, and the badge's name | **Front** — the screen: badge `#266`, `21 pts`, a row of stars, and a little egg drawing |
 
-- Badge ID `#266`, currently showing `21 pts`, a 5-star meter (4 filled + 1 partial), and a hand-drawn egg/blob icon on what looks like a low-power reflective/e-paper-style display.
-- Coin-cell powered (per the back-panel warning label) — worth keeping in mind for the bench rig; this thing isn't going to run forever, and IR TX is one of the hungrier things it can do.
-- Has an IR emitter/receiver used for badge-to-badge "touches" — bump two badges together, a spring-loaded **contact button gets physically depressed**, and (apparently) an IR exchange happens that increments both sides' point counter.
-- Firmware source not yet located for this badge (searches so far were aimed at the wrong project — see correction above). Next search pass should target **BradánLane Studio** / **DC NextGen** repos specifically. Firmware-reading route is parked, not dead — see **Firmware shortcut** below.
-
-## Tools on hand
-
-- Flipper Zero, stock firmware, updated to **1.4.3** mid-project via `qFlipper-cli` (release channel). Confirmed post-update via `device_info` over serial: `firmware_version: 1.4.3`, hardware ver 15, Official fork.
-- macOS box, `pyserial` scripting against the Flipper's CLI over `/dev/cu.usbmodemflip_*` at 230400 baud, since the physical device isn't always within reach mid-session.
+| |
+|:--:|
+| ![Bare board with the display flipped open on its ribbon cable, showing the battery, chips, and a header](media/badge-board-mcu.jpg) |
+| **Inside** — popped the case open. You can see the battery, the little computer chips, and the screen flipped out on its ribbon cable. |
 
 ---
 
-## Attempt 1 — just learn it like a TV remote
+## The goal
 
-Flipper's IR "Learn" mode will save *anything* it sees as an `.ir` file — it never validates that what it captured is a coherent protocol. Aimed the badge at the Flipper, triggered a touch, saved the result. Twice.
+The [DC NextGen](https://dcnextgen.org) "Tanuki" badge earns points by "touching" other badges — bump two badges together and both of their `pts` counters go up. **The real goal here is to rack up points without needing a room full of people to bump badges with** — by figuring out exactly what message a "touch" sends over infrared, then having the Flipper Zero send that same message on demand. If it works, one hacker with a Flipper could rack up points as fast as they want, alone.
+
+That's a bigger ask than just "peek at the signal" — it means the fake touch has to be good enough to actually fool the badge, not just look close. So this write-up isn't just curiosity, it's building toward: capture a real touch → understand it completely → replay it → watch the points go up without another badge in the room.
+
+## The short version (read this first)
+
+The badge sends its "touch" over **infrared light** — the same invisible light your TV remote uses. I wanted to see exactly what that light signal looks like and what it says, so I can copy it.
+
+I tried to use a **Flipper Zero** (a little hacker gadget that can read and send infrared signals) to catch and copy the badge's signal. **It didn't work** — and figuring out *why* it didn't work turned out to be most of the interesting part. Short answer: the Flipper's infrared "ear" is built to only understand one specific "pitch" of blinking light, and this badge blinks at a different pitch. Every recording came back as garbage, and every guess I fired back at the badge got ignored — the points counter stayed at 21 no matter what.
+
+So: I ordered the right tools for the job (a sensor that can hear *any* pitch, plus a proper recorder fast enough to write it all down). This file is the lab notebook — what I tried, why it failed, what I learned anyway, and what's next.
+
+---
+
+## Quick vocabulary (skip if you already know this stuff)
+
+- **Infrared (IR) light** — light that's invisible to human eyes but small electronic sensors can see it. TV remotes, badge "touches," and old-school data cables all use it.
+- **Carrier frequency** — infrared isn't sent as one steady beam, it's blinked on and off super fast, like Morse code but way faster — thousands of times per second. How fast it blinks is called the *frequency*, measured in kHz (thousands of blinks per second). Two devices only understand each other if they agree on this blink speed.
+- **Demodulator** — a chip that's built to listen for ONE specific blink speed and translate it into 1s and 0s. If you point a different blink speed at it, it doesn't understand — it just spits out garbage.
+- **Packet** — a structured little message, like a text: an intro (so the receiver knows a message is starting), the actual content, and often a "did this arrive correctly?" check at the end.
+- **Checksum** — a bit of built-in math a message carries so the receiver can double check it wasn't scrambled in transit. Kind of like how a receipt total should match up with all the item prices added together — if it doesn't, something's wrong, and you throw the message out. This is probably why just firing random signals at the badge never worked: it checks its math before it believes you.
+- **Logic analyzer** — a tool that watches a wire and writes down, many times per second, whether it's HIGH or LOW (on or off) at that instant. Basically a super-fast flip-book camera for electricity.
+- **MCU (microcontroller)** — the tiny computer chip that's the "brain" of a gadget like this badge.
+
+---
+
+## Tools I'm using
+
+- A **Flipper Zero**, updated to the newest firmware (version 1.4.3) partway through this project.
+- A laptop, talking to the Flipper over a USB cable using little Python scripts, so I could run tests even when I wasn't standing right next to it.
+
+---
+
+## Attempt 1 — just try "Learn" mode, like teaching a universal remote
+
+Flipper has a "Learn" button for infrared: point it at a remote, press a button on the remote, and Flipper saves whatever it saw. Important catch: **it saves whatever it saw even if that was nonsense** — it doesn't check whether the signal actually made sense.
+
+I aimed the badge at the Flipper, did a "touch," and hit Learn. Twice. Here's exactly what got saved:
 
 ```
 $ storage read /ext/infrared/Remote.ir
-Filetype: IR signals file
-Version: 1
 name: Magnus
 type: raw
 frequency: 38000
@@ -49,8 +69,6 @@ data: 123 125186 135 4012 88
 
 ```
 $ storage read /ext/infrared/Remote2.ir
-Filetype: IR signals file
-Version: 1
 name: RAW_11
 type: raw
 frequency: 38000
@@ -58,106 +76,93 @@ duty_cycle: 0.330000
 data: 493 3943 187 1925 240 216 125 428 126 227 125
 ```
 
-Both files are checked into this repo (`Remote.ir`, `Remote2.ir`) as evidence, byte-verified against the SD card copies (130 and 153 bytes respectively).
+(Both of these are saved in this repo as `Remote.ir` and `Remote2.ir` — proof, not just my word for it.)
 
-**Why these are garbage, not signal:** a real IR frame is dozens of tightly-packed transitions over ~50–70 ms with a consistent bit-period unit. Split `Remote2.ir`'s data into marks/spaces:
+**Why I know this is garbage and not a real signal:** a real infrared message is dozens of blinks packed tightly together, all following one consistent rhythm — like a drum beat. Look at the numbers in `Remote.ir`: there's a **125,186 microsecond** gap (that's over a tenth of a second — enormous compared to everything else, which is a few *hundred* microseconds) sitting between two tiny blips. That's not a rhythm, that's three random noises with silence in between. Same story in `Remote2.ir` — the gaps between blinks jump all over the place with no shared pattern.
 
-```
-marks:  493, 187, 240, 125, 126, 125  µs
-spaces: 3943, 1925, 216, 428, 227     µs
-```
+One more trap I nearly fell for: both files say `frequency: 38000`. That looks like a measurement, but it's not — **it's just the default number the Flipper writes into every file**, because its receiver chip throws away the actual blink speed before it ever tells the software anything. It physically can't report a number it never learned. Don't trust that field.
 
-No common divisor, no repeating structure, and `Remote.ir` has a **125 millisecond** gap sitting between two microsecond-scale blips — three orphaned spikes, not a packet. Also worth flagging: `frequency: 38000` / `duty_cycle: 0.33` in both files are **hardcoded defaults** the Flipper writes on every raw learn — the demodulator throws the real carrier away before the CPU ever sees it, so it literally cannot report a measured frequency. Don't trust that field.
+**What this means:** the Flipper's ear wasn't hearing the badge's real "voice" — it was just twitching randomly because it heard a pitch it doesn't understand. Like trying to tune an old radio to a frequency it doesn't cover: you get static, not a garbled version of the station.
 
-**Read:** the sensor glitched. It's not lying about the badge's protocol, it's just malfunctioning against a carrier it can't lock onto.
+## Attempt 2 — listen live, for longer, holding the button
 
-## Attempt 2 — live capture, longer windows, better aim
+Switched to watching the Flipper's raw feed live, for 25-40 second stretches, doing several "touches" in a row — including holding the badge's little contact button down the entire time (in case the badge only "talks" while that button is pressed — turns out, it does).
 
-Switched to `ir rx` (decoded) and `ir rx raw` (raw edges) over the CLI, live-streamed for 25–40 second windows while triggering repeated touches, including with the badge's **contact button held down** the whole time (in case transmission is gated on contact, which — spoiler — it is).
+Result: **almost total silence.** One run caught a 3-blip fragment. A whole 25-second window, badge held right up against the Flipper's sensor the entire time, caught **zero** blips at all.
 
-Results: **mostly nothing.** One run caught a single 3-sample fragment (`404 8448 125`). A 25-second window with the button held the entire time, aimed at point-blank range, caught **zero** frames.
+**What this means:** this ruled out "I'm just aiming it wrong." If the Flipper's ear could hear this badge at all, holding them together for 25 straight seconds would catch *something* consistent, not silence one time and 3 random blips the next. The receiver just plain can't hear this badge's pitch.
 
-**Read:** this isn't an aiming problem. A receiver that's actually locked onto a signal doesn't intermittently produce zero-to-three-sample fragments over tens of seconds of continuous transmission. The Flipper's IR receiver is *structurally* blind to this carrier.
+## Attempt 3 — okay, can I fool it by just yelling random stuff at it?
 
-## Attempt 3 — stop listening, start talking (does the badge care what hits it?)
+New question: maybe the badge doesn't check very carefully — maybe *any* infrared blast near it bumps the counter. Worth testing before doing anything harder. Fired a bunch of standard remote-control-style signals at the badge's sensor, at several different pitches (30, 33, 36, 38, 40, and 56 kHz), with different patterns, 48 combinations total, badge's button held the whole time.
 
-If we can't decode the real packet yet, cheapest next question: does the badge validate *anything*, or will generic IR nudge the counter? Fired bursts of standard NEC frames (38 kHz) at the badge's receiver window, several code/address combos, badge held in various states.
+`pts` stayed at 21. Every single time.
 
-`pts` stayed at 21. Every time.
-
-Then swept carrier: 30 / 33 / 36 / 40 / 56 kHz, each with a NEC-style preamble+bitframe, multiple duty cycles, while holding the badge's contact button (light-on-press, tone-on-hold — confirmed the button gates the badge into an active/listening state). **48 total TX combinations in one pass** (6 carriers × 2 duty cycles × 4 encodings including a raw payload built from the badge's own ID `0x0266`). Badge reacted once during a broader ad-hoc sweep (worth re-isolating — see Next steps), but bisecting single carriers afterward (36 kHz, 56 kHz) individually produced no reaction and `pts` never moved.
-
-**Read:** this rules out "dumb presence beacon." The badge validates something — almost certainly a packet carrying its own ID plus some kind of checksum — before it'll count a touch. Blind replay isn't going to get there without seeing a real packet first.
+**What this means:** the badge is not a pushover. It's checking that an incoming message actually looks right — matches its expected format, probably including a checksum — before it'll count it as a real touch. Good design on their part, annoying for me: I can't brute-force this, I actually have to see a real message first.
 
 ---
 
-## Why the Flipper is the wrong tool here (and what isn't)
+## Why the Flipper hit a wall (and what tool actually works)
 
-The Flipper's IR hardware is two separate pieces:
+The Flipper's infrared parts are really two separate things:
 
-- **TX** — a plain IR LED on a timer, can emit any carrier 10 kHz–1 MHz. This is fine, this is how the carrier sweep worked.
-- **RX** — an integrated demodulator (TSOP-style part) **hard-wired to ~38 kHz**, in analog silicon, ahead of anything the firmware can touch. There's no setting to retune it and no way to get raw light out of it. Every "learn" against a non-38kHz source just samples the sensor's own glitching.
+- **The mouth (sending)** — a plain infrared LED, controllable at basically any pitch. This part is flexible and worked fine for my tests.
+- **The ear (receiving)** — a sealed chip **hard-wired to only understand one pitch (~38 kHz)**. There's no setting to change this — the "translate blinks into data" part happens inside the chip itself, before the Flipper's software ever gets a say. If the badge blinks at a different speed, the Flipper's ear literally cannot hear it correctly, no matter how I aim it or how long I wait.
 
-Also checked: the [Flipper Logic Analyzer app](https://github.com/g3gg0/flipper-logic_analyzer) (SUMP protocol, works with PulseView) samples GPIO at only **~100 kHz**. Even wired to a proper wideband IR sensor, that's not fast enough to resolve a 30–60 kHz carrier without aliasing (need 2–10x oversampling, i.e. 120 kHz–600 kHz+). So the Flipper can't be the capture instrument for this badge under any configuration — stock or hacked GPIO.
+I also checked whether the Flipper's "Logic Analyzer" mode (a tool for watching raw wires) could work around this. It samples about 100,000 times per second. That sounds like a lot, but to cleanly capture something blinking 30,000–60,000 times per second, you need to sample several times *faster* than the blink — otherwise you get a blurry, misleading picture (this is called *aliasing*, like a spinning wheel looking like it's going backward in a movie because the camera isn't fast enough). So even hacking around the sealed ear, the Flipper's other tools aren't fast enough either.
 
-## The fix: real capture hardware
+## The fix: get the right sensor and the right recorder
 
-**Ordered — Adafruit ($25.70 incl. shipping/tax):**
-- [TSMP96000](https://www.adafruit.com/product/5970) wideband IR sensor breakout — detects 20–60 kHz carriers and, critically, **outputs the modulated signal with carrier intact** (not demodulated) — exactly what a "code learning" application needs and exactly what the badge's Flipper-blind carrier requires.
-- [STEMMA JST PH → male header cable](https://www.adafruit.com/product/3893)
-- [F/M extension jumper wires, 20×6"](https://www.adafruit.com/product/1954)
-- [Half-size breadboard, 400 tie points](https://www.adafruit.com/product/64) — swapped in for the original bundle pick (#3314), which turned out to be discontinued/out of stock.
+**Ordered from Adafruit ($25.70 total):**
+- A [TSMP96000](https://www.adafruit.com/product/5970) — a sensor built specifically to hear *any* infrared pitch from 20-60 kHz and pass along the raw blinking, instead of assuming one fixed speed like the Flipper does.
+- A little adapter cable, jumper wires, and a breadboard, to wire it all together.
 
-**Ordered — Amazon (~$18.50):**
-- Xicoolee 8-channel USB logic analyzer, **CY7C68013A** chip, 24 MHz, sigrok/PulseView (`fx2lafw` driver — the reference driver was written for this exact chip, so compatibility is a known quantity, not a gamble). Chosen after the SparkFun 24MHz/8ch analyzer (the "obvious" pick) and even Adafruit's original Saleae Logic ($149.50, also the wrong price point) both turned out to be discontinued/out of stock.
+**Ordered from Amazon (~$18.50):**
+- A proper USB logic analyzer that samples 24 million times per second — hundreds of times faster than we need, so no more blurry aliasing problem.
 
-At 24 MHz sampling against a ≤60 kHz carrier, that's 400–800x oversampling — plenty of headroom to resolve carrier and bit timing cleanly, unlike the Flipper's 100 kHz ceiling.
-
-*Fallback if I ever want to go Flipper-only:* swap the TSMP96000 for a **TSOP pack (36/40/56 kHz fixed-frequency parts)**. A carrier-matched TSOP hands you an already-demodulated bitstream, which the Flipper's 100 kHz Logic Analyzer app *can* read — you just have to already know (or brute-force by trying each part) which fixed frequency matches.
+Once both arrive, the sensor's job is to turn the invisible blinking into an electrical signal, and the logic analyzer's job is to write down that signal in perfect detail so I can look at it on my laptop.
 
 ---
 
-## Plan once hardware lands
+## The plan once the parts show up
 
-1. **Bench setup.** TSMP96000 on breadboard via JST cable (3–5 V, GND, Signal). Signal → Xicoolee analyzer channel, common ground. Install PulseView/sigrok.
-2. **Carrier discovery.** Hold contact button, aim badge at sensor, read the carrier frequency straight off the PulseView trace. This is the single fact that's been out of reach the whole session so far.
-3. **Packet capture.** Multiple button-hold beacons; if a second badge can be borrowed, capture a **real two-badge touch** — that's the actual validated exchange, not just one side beaconing.
-4. **Decode.** Bit period, mark/space encoding, framing. Diff multiple captures to separate the static ID field (should read back as `#266`) from checksum/variable bytes.
-5. **Replay via Flipper.** `ir tx RAW F:<measured carrier> ...` with the decoded packet, contact button held, watch `pts` move off 21. That's the win condition.
-6. **Write it up.** Carrier, framing, field layout, checksum algorithm, annotated traces.
+1. **Wire it up.** Sensor → breadboard → logic analyzer, all sharing a common ground wire.
+2. **Find the real pitch.** Hold the badge's contact button, aim it at the sensor, and just *look* at the recording — finally see the actual blink speed instead of guessing.
+3. **Catch a real message.** Do several touches. If I can borrow a second badge, catch an actual two-badge handshake — that's the real deal, not just one badge talking to itself.
+4. **Decode it.** Figure out the rhythm, find the badge's ID (`#266`) inside the message, and find whatever part changes each time (probably the checksum).
+5. **Prove it by replaying it.** Have the Flipper send the exact decoded message back at the right pitch, and watch `pts` finally move past 21. That's the finish line — one badge, one Flipper, no second person needed.
+6. **If step 5 works, automate it.** Loop the replay and watch the points climb as fast as the badge will accept them.
+7. **Write it all up properly**, with the real signal diagrams.
 
-## Open risks
+## Things that could still trip this up
 
-- **Only one badge on hand.** Might only ever see a lone beacon, not a full two-party handshake, without a second unit.
-- **Checksum / anti-replay.** If the payload has a rolling counter or per-partner nonce, static replay won't work and the algorithm needs modeling, not just capturing.
-- **Might be baseband, not carrier-modulated at all** (IrDA-style). The TSMP96000 still sees the light either way, but Flipper TX replay assumes a carrier — would need rethinking if so.
-- **Re-isolate the "something happened" carrier** from the ad-hoc 48-combo sweep — got a reaction once but haven't pinned which of the 48 caused it. Worth a clean single-variable re-test once real capture hardware confirms the actual carrier anyway (may be moot).
+- **Only having one badge** makes it hard to see a real two-way handshake, not just one badge talking to nobody.
+- **The checksum might be tricky** — if it includes something that changes every time (to stop people from just replaying an old recording), just copying a message won't be enough; I'd need to understand the actual math behind it.
+- **It's possible there's no "pitch" at all** — some infrared systems send data as a plain on/off flicker with no fast blinking underneath. The new sensor would still catch it, but replaying it through the Flipper (which assumes a pitch) might need a different trick.
 
-## Firmware shortcut (parallel path, unblocked by hardware)
+## Bonus path: read the badge's own brain
 
-Haven't yet searched for **BradánLane Studio** / **DC NextGen** firmware repos specifically (earlier searches wrongly targeted r00tz — see correction up top). Worth a pass.
+While digging around, I also popped the case open to look at the actual circuit board:
 
-Also popped the case to get a bare-board shot:
+![Bare board with the display flipped open on its ribbon cable](media/badge-board-mcu.jpg)
 
-![Bare board with display flipped open on flex cable, showing coin cell, ICs, and header](media/badge-board-mcu.jpg)
+What I could make out:
+- A **coin battery** (CR2032), the same kind used in some watches.
+- A big black part labeled `KLJ-1230` — probably a coil that helps power the screen. Worth looking up.
+- Two computer chip packages — one of them is almost certainly the badge's "brain" (the MCU), but the writing on them is too small and blurry in this photo to read for sure. **Next time: closer, sharper photos of each chip.**
+- A row of unused connector holes labeled roughly `W R T U V G` — this smells like a hidden **programming port**, the kind engineers use to load new software onto the chip. Worth testing with a multimeter later.
+- The screen is almost certainly **e-paper** (like a Kindle) rather than a normal screen — it only needs power to *change* what it shows, and holds the picture with no power at all otherwise. Good to know, because it also means the screen updates slowly — if I test something and the screen doesn't change right away, that might just be the screen being slow, not proof that nothing happened.
 
-What's legible:
-- **CR2032** coin cell, socketed, 3V.
-- A large black component silkscreened **`KLJ-1230`** — likely an inductor/coil for a boost or e-paper driver stage. Worth a datasheet search.
-- Two IC packages (one small SOIC, one larger QFP/SSOP) — one of these is almost certainly the MCU, but the part markings are too small/blurry in this shot to transcribe with confidence. **Need a macro shot of each chip** before this is useful for a datasheet search.
-- An unpopulated header silkscreened with letters that read roughly `W R T U V G` — a strong candidate for a debug/programming port. Worth probing with a multimeter (continuity to obvious SWD/JTAG/UART pins on the MCU) once it's identified.
-- The panel on the flex cable has a lot-code sticker (`...2009017-C...V962A...`-style string) consistent with an **e-paper/electrophoretic display**, not a simple LCD — matches the grainy, high-contrast look in the front-panel photo. Relevant for testing: e-paper refreshes are slow (hundreds of ms to seconds) and don't need power to hold an image, so a "did the badge react" check needs to give the display time to redraw before concluding nothing happened.
-
-Next step on this path: closer, well-lit macro photos of both IC packages, then ID the chip and go hunting for a datasheet or existing dump — which would hand over the carrier and packet format directly and skip straight to step 5.
+If I can identify that brain chip from a clearer photo, there's a chance someone's already published its manual (a "datasheet") or even dumped its software — which could just hand me the answer instead of me having to reverse-engineer it from scratch.
 
 ---
 
-## Repo contents
+## What's in this folder
 
 | File | What it is |
 |---|---|
-| `Remote.ir`, `Remote2.ir` | Two learned "captures" from the Flipper — confirmed sensor noise, kept as documented negative examples (see Attempt 1). |
-| `flipper-backup-2026-08-08.tar.gz` | Flipper internal storage backup, taken before the 1.4.3 firmware flash. |
-| `media/badge-back-pcb.jpg`, `media/badge-front-display.jpg` | Reference photos of the actual badge — back (PCB/branding) and front (display). |
-| `media/badge-board-mcu.jpg` | Bare board, case popped, display flipped open on its flex cable — coin cell, ICs, header, e-paper panel. |
-| `FlipperHIDecoder/` | Unrelated side-quest — a DEF CON 34 tool for converting ESP-RFID/Proxmark3 HID card dumps to Flipper format. Pulled in during initial exploration of "what's this Flipper thing capable of," kept for reference. |
+| `Remote.ir`, `Remote2.ir` | The two "recordings" from Attempt 1 — proven garbage, kept as proof of what *doesn't* work. |
+| `flipper-backup-2026-08-08.tar.gz` | A backup of the Flipper's settings, taken before updating its software. |
+| `media/badge-back-pcb.jpg`, `media/badge-front-display.jpg` | Photos of the outside of the badge. |
+| `media/badge-board-mcu.jpg` | Photo of the badge with its case popped open. |
+| `FlipperHIDecoder/` | An unrelated tool I grabbed early on while exploring what the Flipper can do — converts ID-card data into a format the Flipper understands. Not part of this badge project, kept for reference. |
